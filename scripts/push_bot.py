@@ -3,6 +3,7 @@
 import rospy
 import smach, smach_ros
 import actionlib
+import util
 
 from geometry_msgs.msg import Twist, Point, Quaternion
 from nav_msgs.msg import Odometry
@@ -29,8 +30,8 @@ class Approach(smach.State):
         smach.State.__init__(self, 
                              outcomes=['end','arrived', 'approach'])
 
-        self.client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
-        self.client.wait_for_server()
+        # self.client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
+        # self.client.wait_for_server()
     
     def execute(self, userdata):
         global g_tags, g_target_ARtag_id, g_cmd_vel_pub
@@ -39,42 +40,88 @@ class Approach(smach.State):
         else:
             if g_target_ARtag_id in g_tags:
                 tag_pose = g_tags[g_target_ARtag_id]
-                if tag_pose.position.x > 0.5:  
+                if tag_pose.position.x > 0.7:  
                     #move with cmd_vel_pub
+                    print(tag_pose.position.x)
                     twist = Twist()
                     twist.linear.x = 0.3
                     g_cmd_vel_pub.publish(twist)
                     return 'approach'
                 else:
-                    # move with move base
-                    goal = MoveBaseGoal()
-                    goal.target_pose.header.frame_id = str(g_target_ARtag_id)
-                    goal.target_pose.pose.position = Point(0, 0, -0.7)
-                    goal.target_pose.pose.orientation = Quaternion(0, 0, 0, 1)
-                    self.client.send_goal(goal)
-                    self.client.wait_for_result()
+                    # # move with move base
+                    # goal = MoveBaseGoal()
+                    # goal.target_pose.header.frame_id = str(g_target_ARtag_id)
+                    # goal.target_pose.pose.position = Point(0, 0, -0.7)
+                    # goal.target_pose.pose.orientation = Quaternion(0, 0, 0, 1)
+                    # self.client.send_goal(goal)
+                    # self.client.wait_for_result()
+                    util.rotate()
+                    util.move(0.5, linear_scale = 0.3)
+                    util.rotate(-87)
+                    util.move(1.2, linear_scale = 0.3)
+                    util.rotate(-87)
+                    util.move(0.5, linear_scale = 0.3)
+                    util.rotate(-87)
                     return 'arrived'
             print("lost target")
+            g_cmd_vel_pub.publish(Twist())
+            return 'approach'
 
 class Push(smach.State):
     def __init__(self):
         smach.State.__init__(self, 
                              outcomes=['end','completed'])
+        self.bumper = 1
+        self.state = 0
+        self.odom = {'x':None, 'y':None}
     
     def execute(self, userdata):
+        global g_cmd_vel_pub
         if rospy.is_shutdown():
             return 'end'
         self.bumper_sub = rospy.Subscriber(
             'mobile_base/events/bumper', BumperEvent, self.bump_callback)
-        self.odom_sub = rospy.Subscriber('/Odom', Odometry, self.odom_callback)
+        self.odom_sub = rospy.Subscriber('/odom', Odometry, self.odom_callback)
+        #rospy.wait_for_message('/Odom', Odometry)
+        rospy.sleep(1)
+        self.pushing = False
+        self.stop = False
 
-        
-    
+        ori_x = None
+        ori_y = None
+        while not self.stop:
+            if ori_x == None and ori_y == None and self.odom['x'] != None and self.odom['y'] != None:
+                ori_x = self.odom['x']
+                ori_y = self.odom['y']
+            twist = Twist()
+            twist.linear.x = 0.1
+            g_cmd_vel_pub.publish(twist)
+            if self.bumper == 1:
+                if self.state == 1:
+                    self.pushing = True
+                if self.state == 0:
+                    self.pushing = False
+            if self.bumper == 0 and self.state == 1:
+                g_cmd_vel_pub.publish(Twist())
+                util.rotate(5)
+            if self.bumper == 2 and self.state == 1:
+                g_cmd_vel_pub.publish(Twist())
+                util.rotate(-5)
+            print(ori_x, ori_y, self.odom['x'], self.odom['y'])
+            if ori_x != None and ori_y != None:
+                if abs(ori_x - self.odom['x']) > abs(2) or abs(ori_y - self.odom['y']) > abs(2):
+                    return 'completed'
+            
     def bump_callback(self, msg):
-        pass
+        self.bumper = msg.bumper
+        self.state = msg.state
 
     def odom_callback(self, msg):
-        pass
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+
+        self.odom['x'] = x
+        self.odom['y'] = y
 
 def ar_callback(msg):
     global g_tags
@@ -96,13 +143,13 @@ def main():
         
         smach.StateMachine.add(
             'APPROACH', Approach(), transitions={'end':'end',
-                                                 'arrived':'end',
-                                                 'approach':'APPROACH'})
-
+                                                 'arrived':'PUSH',
+                                                 'approach':'APPROACH'})  
         smach.StateMachine.add(
-            'Push', Push(), transitions={'end':'end',
-                                         'completed':'end'})   
-
+            'PUSH', Push(), transitions={'end':'end',
+                                         'completed':'end'}) 
+        
+        
     sm.execute()
     rospy.spin()
 
